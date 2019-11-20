@@ -220,13 +220,13 @@ func (d *database) TxOptions() *sql.TxOptions {
 
 // BindTx binds a *sql.Tx into *database
 func (d *database) BindTx(ctx context.Context, t *sql.Tx) error {
-	d.sessMu.Lock()
-	defer d.sessMu.Unlock()
-
-	d.baseTx = newBaseTx(t)
 	if err := d.Ping(); err != nil {
 		return err
 	}
+
+	d.sessMu.Lock()
+	d.baseTx = newBaseTx(t)
+	d.sessMu.Unlock()
 
 	d.SetContext(ctx)
 	d.txID = newBaseTxID()
@@ -274,6 +274,8 @@ func (d *database) BindSession(sess *sql.DB) error {
 // Ping checks whether a connection to the database is still alive by pinging
 // it
 func (d *database) Ping() error {
+	d.sessMu.Lock()
+	defer d.sessMu.Unlock()
 	if d.sess != nil {
 		return d.sess.Ping()
 	}
@@ -344,30 +346,32 @@ func (d *database) NewClone(p PartialDatabase, checkConn bool) (BaseDatabase, er
 
 // Close terminates the current database session
 func (d *database) Close() error {
+	d.sessMu.Lock()
 	defer func() {
-		d.sessMu.Lock()
 		d.sess = nil
 		d.baseTx = nil
 		d.sessMu.Unlock()
 	}()
-	if d.sess != nil {
-		if cleaner, ok := d.PartialDatabase.(hasCleanUp); ok {
-			cleaner.CleanUp()
-		}
 
-		d.cachedCollections.Clear()
-		d.cachedStatements.Clear() // Closes prepared statements as well.
+	if d.sess == nil {
+		return nil
+	}
 
-		tx := d.Transaction()
-		if tx == nil {
-			// Not within a transaction.
-			return d.sess.Close()
-		}
+	if cleaner, ok := d.PartialDatabase.(hasCleanUp); ok {
+		cleaner.CleanUp()
+	}
 
-		if !tx.Committed() {
-			tx.Rollback()
-			return nil
-		}
+	d.cachedCollections.Clear()
+	d.cachedStatements.Clear() // Closes prepared statements as well.
+
+	tx := d.Transaction()
+	if tx == nil {
+		// Not within a transaction.
+		return d.sess.Close()
+	}
+
+	if !tx.Committed() {
+		tx.Rollback()
 	}
 	return nil
 }
